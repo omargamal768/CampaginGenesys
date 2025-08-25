@@ -25,7 +25,11 @@ public class GenesysScheduler {
     @Scheduled(fixedRate = 60000)
     public void runFullGenesysPipelineJob() {
         logger.info("🚀 Scheduler: Starting full Genesys sync and processing pipeline...");
+        genesysService.saveAllWrapUpCodes();
+        genesysService.saveNewUsersFromSearchApi();
         genesysService.getConversationsAndStore();
         taggerService.sendAttemptsToTaager();
+
+
     }
 }

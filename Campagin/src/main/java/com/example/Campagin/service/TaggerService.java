@@ -37,9 +37,7 @@ public class TaggerService {
     private final AttemptRepository attemptRepository;
     private final CallbackRepository callbackRepository;
 
-    private final String TAGGER_API_URL = "https://admin-internal.dev.taager.com/dialer/webhooks/genesys/call-attempts";
 
-    private static final DateTimeFormatter ISO_FORMATTER = DateTimeFormatter.ISO_INSTANT;
 
     private String formatUtcDate(LocalDateTime localDateTime) {
         return localDateTime.atZone(ZoneId.systemDefault()) // or ZoneOffset.UTC if already UTC
@@ -115,8 +113,9 @@ public class TaggerService {
             call.put("call_datetime", attempt.getStartGst() != null ? formatUtcDate(attempt.getStartGst()) : "N/A");
             call.put("order_id", attempt.getOrderId() != null ? attempt.getOrderId() : "UNKNOWN");
             call.put("agent_id", attempt.getAgentEmail() != null ? attempt.getAgentEmail() : "NO_AGENT");
-
-            // Wrap-up logic
+call.put("Callable",attempt.isCallable());
+call.put("PhoneNumber",attempt.getPhone());
+// Wrap-up logic
             String peerWrapUp = attempt.getPeerWrapUpCode() != null ? attempt.getPeerWrapUpCode() : "NONE";
             String agentWrapUp = attempt.getAgentWrapUp() != null ? attempt.getAgentWrapUp() : "NONE";
             String agentWrapUpName = attempt.getAgentWrapUpName() != null ? attempt.getAgentWrapUpName() : "NONE";
@@ -168,6 +167,7 @@ public class TaggerService {
             headers.setBearerAuth(token);
 
             HttpEntity<Map<String, Object>> request = new HttpEntity<>(payload, headers);
+            String TAGGER_API_URL = "https://admin-internal.dev.taager.com/dialer/webhooks/genesys/call-attempts";
             ResponseEntity<String> response = restTemplate.postForEntity(TAGGER_API_URL, request, String.class);
 
             if (response.getStatusCode().is2xxSuccessful()) {

@@ -1,24 +1,19 @@
 package com.example.Campagin.service;
 
-import com.example.Campagin.config.RetryUtils;
-import com.example.Campagin.model.Attempt;
-import com.example.Campagin.model.Callback;
-import com.example.Campagin.model.ScimUserResponse;
+
+import com.example.Campagin.model.*;
 import com.example.Campagin.repo.AttemptRepository;
 import com.example.Campagin.repo.CallbackRepository;
+import com.example.Campagin.repo.UsersRepository;
+import com.example.Campagin.repo.WrapupRepository;
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
+import com.fasterxml.jackson.databind.node.ArrayNode;
 import com.fasterxml.jackson.databind.node.ObjectNode;
-import com.mypurecloud.sdk.v2.ApiClient;
-import com.mypurecloud.sdk.v2.Configuration;
-import com.mypurecloud.sdk.v2.api.OutboundApi;
-import com.mypurecloud.sdk.v2.model.DomainEntityRef;
-import com.mypurecloud.sdk.v2.model.ExportUri;
-import org.apache.commons.csv.CSVFormat;
-import org.apache.commons.csv.CSVParser;
-import org.apache.commons.csv.CSVRecord;
+
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
+import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.http.*;
 import org.springframework.stereotype.Service;
@@ -26,16 +21,18 @@ import org.springframework.util.LinkedMultiValueMap;
 import org.springframework.util.MultiValueMap;
 import org.springframework.web.client.HttpClientErrorException;
 import org.springframework.web.client.RestTemplate;
+import org.springframework.web.client.ResourceAccessException;
 
-import java.io.StringReader;
+
+
 import java.time.LocalDateTime;
 import java.time.ZoneId;
 import java.time.ZonedDateTime;
 import java.time.format.DateTimeParseException;
 import java.util.*;
 import java.util.stream.Collectors;
-import java.util.regex.Matcher;
-import java.util.regex.Pattern;
+
+
 
 @Service
 public class GenesysService {
@@ -55,7 +52,12 @@ public class GenesysService {
     private final RestTemplate restTemplate;
     private final AttemptRepository attemptRepository;
     private final CallbackRepository callbackRepository;
+    @Autowired
+    private WrapupRepository wrapupRepository;
+    @Autowired
+    private UsersRepository usersRepository;
     private static final Logger logger = LoggerFactory.getLogger(GenesysService.class);
+    private static final String DEFAULT_VALUE = "N/A";
 
     public GenesysService(RestTemplate restTemplate, AttemptRepository attemptRepository, CallbackRepository callbackRepository) {
         this.restTemplate = restTemplate;
@@ -115,7 +117,7 @@ public class GenesysService {
         while (true) {
             String body = String.format("""
                     {
-                       "interval": "2025-08-24T00:00:00Z/2025-08-24T23:59:59.000Z",
+                       "interval": "2025-08-25T00:00:00Z/2025-08-25T23:59:59.000Z",
                        "order": "asc",
                        "paging": {
                          "pageSize": %d,
@@ -164,14 +166,13 @@ public class GenesysService {
 
     private void processConversation(JsonNode conv) {
         boolean campaignMatch = false;
-
         // ✅ Check if any participant.session has the configured campaignId
         for (JsonNode participant : conv.path("participants")) {
             for (JsonNode session : participant.path("sessions")) {
-                String convCampaignId = session.path("outboundCampaignId").asText();
+                String convCampaignId = session.path("outboundCampaignId").asText(DEFAULT_VALUE);
                 if (campaignId.equals(convCampaignId)) {
                     campaignMatch = true;
-                    logger.info("******************"+convCampaignId);
+                    logger.debug("******************" + convCampaignId);
                     break;
                 }
             }
@@ -182,9 +183,9 @@ public class GenesysService {
         if (!campaignMatch) {
             for (JsonNode participant : conv.path("participants")) {
                 for (JsonNode session : participant.path("sessions")) {
-                    String convCampaignId = session.path("outboundCampaignId").asText();
+                    String convCampaignId = session.path("outboundCampaignId").asText(DEFAULT_VALUE);
                     logger.info("Conversation {} skipped because outboundCampaignId IS {} != configured campaignId {}",
-                            conv.path("conversationId").asText(), convCampaignId, campaignId);
+                            conv.path("conversationId").asText(DEFAULT_VALUE), convCampaignId, campaignId);
                 }}
             return;
         }
@@ -193,7 +194,7 @@ public class GenesysService {
         List<Callback> callbacks = new ArrayList<>();
 
         for (JsonNode participant : conv.path("participants")) {
-            String purpose = participant.path("purpose").asText();
+            String purpose = participant.path("purpose").asText(DEFAULT_VALUE);
             if ("customer".equalsIgnoreCase(purpose)) {
                 for (JsonNode session : participant.path("sessions")) {
                     if ("voice".equalsIgnoreCase(session.path("mediaType").asText())) {
@@ -295,7 +296,16 @@ public class GenesysService {
         attempt.setConversationId(conv.path("conversationId").asText());
         String outboundContactId = session.path("outboundContactId").asText("");
         String campaignId = session.path("outboundCampaignId").asText("");
-attempt.setStatus(false);
+        attempt.setStatus(false);
+        JsonNode conversationEndNode = conv.path("conversationEnd");
+logger.info(conversationEndNode.toString());
+
+        boolean isCallable = !conversationEndNode.isMissingNode() && !conversationEndNode.isNull();
+        attempt.setCallable(!isCallable);
+// Check if the field exists and is not missing/null
+
+
+
 
 //      String accessToken = getAccessToken();
 //      String downloadUri = initiateContactExport(accessToken);
@@ -308,7 +318,11 @@ attempt.setStatus(false);
         attempt.setOutboundContactId(outboundContactId);
         attempt.setOrderId(outboundContactId);
         String phoneNumber = session.path("dnis").asText();
-        attempt.setPhone(phoneNumber.replace("tel:6990072", ""));
+        if (phoneNumber != null && phoneNumber.startsWith("tel:")) {
+            phoneNumber = phoneNumber.replace("tel:", "");  // removes only "tel:"
+        }
+        attempt.setPhone(phoneNumber);
+
         Pair<String, String> firstLastTimes = getFirstLastTimes(session);
         attempt.setStartGst(parseIso8601ToGst(firstLastTimes.getLeft()));
         attempt.setEndGst(parseIso8601ToGst(firstLastTimes.getRight()));
@@ -714,207 +728,51 @@ attempt.setStatus(false);
     }
 
     public String fetchAgentEmail(String userId) {
-        if (userId == null || userId.isEmpty()) {
+        if (userId == null || userId.isEmpty() || DEFAULT_VALUE.equals(userId)) {
+            logger.warn("⚠️ Invalid userId provided: {}", userId);
             return null;
         }
 
-        String accessToken = getAccessToken();
-        if (accessToken == null) {
-            logger.error("Failed to obtain Access Token for SCIM Users API.");
-            return null;
-        }
+        logger.info("🔍 Looking up agent email for User ID: {}", userId);
 
-        String scimUserUrl = String.format("https://api.%s/api/v2/scim/users/%s", region, userId);
-        HttpHeaders headers = new HttpHeaders();
-        headers.setBearerAuth(accessToken);
-        headers.set("Accept", MediaType.APPLICATION_JSON_VALUE);
-
-        HttpEntity<Void> requestEntity = new HttpEntity<>(headers);
-
-        try {
-            logger.info("🔍 Fetching Agent Email for User ID: {}", userId);
-
-            ResponseEntity<ScimUserResponse> response = restTemplate.exchange(
-                    scimUserUrl,
-                    HttpMethod.GET,
-                    requestEntity,
-                    ScimUserResponse.class
-            );
-
-            if (response.getStatusCode().is2xxSuccessful() && response.getBody() != null) {
-                logger.info("✅ Successfully fetched Agent Email for User ID: {}", userId);
-                return response.getBody().getEmails().get(0).getValue();
-            } else {
-                throw new RuntimeException("❌ Failed to fetch Agent Email. Status: " + response.getStatusCode());
-            }
-
-        } catch (Exception e) {
-            logger.error("🚫 Failed permanently to fetch Agent data for User ID: {}: {}", userId, e.getMessage(), e);
-            return null;
-        }
+        return usersRepository.findById(userId)
+                .map(user -> {
+                    logger.info("✅ Found email for User ID {}: {}", userId, user.getEmail());
+                    return user.getEmail();
+                })
+                .orElseGet(() -> {
+                    logger.warn("❌ No email found for User ID: {}", userId);
+                    return null;
+                });
     }
-//    public List<List<String>> syncContactsFromGenesysApi() {
-//        logger.info("************Start First Iteration of Genesys Cloud **************");
-//        logger.info("=== [SYNC START] Initiating synchronization with Genesys Cloud contacts ===");
-//        String accessToken = getAccessToken();
-//        logger.info("[SUCCESS]    Token", accessToken);
-//        String downloadUri = initiateContactExport(accessToken);
-//        logger.info("[SUCCESS]    downloadUri", downloadUri);
-//        String csvContent = readExportData(downloadUri, accessToken);
-//        logger.info("[SUCCESS]    csvContent", csvContent.toString());
-//        List<List<String>> rows = new ArrayList<>();
-//        try (CSVParser parser = new CSVParser(new StringReader(csvContent),
-//                CSVFormat.DEFAULT.builder()
-//                        .setHeader()              // use header from CSV
-//                        .setSkipHeaderRecord(true) // skip header row in iteration
-//                        .setTrim(true)
-//                        .build())) {
-//
-//            for (CSVRecord record : parser) {
-//                List<String> row = new ArrayList<>();
-//                record.forEach(row::add);
-//                rows.add(row);
-//            }
-//        } catch (Exception e) {
-//            logger.error("❌ Failed to parse CSV: {}", e.getMessage(), e);
-//        }
-//
-//        // ✅ Log all rows
-//        logger.info("📋 Parsed {} rows from CSV", rows.size());
-//        rows.forEach(r -> logger.info("Row: {}", r));
-//
-//        return rows ;
-//    }
-//    private String initiateContactExport(String token) {
-//        String contactListId = "421ca5e3-8fe2-4975-88aa-3323898a6b23";
-//        String region = "mec1";
-//        try {
-//            ApiClient apiClient = ApiClient.Builder.standard()
-//                    .withAccessToken(token)
-//                    .withBasePath("https://api." + region + ".pure.cloud")
-//                    .build();
-//            Configuration.setDefaultApiClient(apiClient);
-//            OutboundApi outboundApi = new OutboundApi();
-//            DomainEntityRef postResponse = RetryUtils.retry(3, 12000, () -> {
-//                logger.info("📤 Triggering new export for contact list {}", contactListId);
-//                return outboundApi.postOutboundContactlistExport(contactListId, null);
-//            });
-//            String exportJobId = postResponse.getId();
-//            logger.info("✅ Export job initiated. Job ID: {}", exportJobId);
-//            String downloadUri = RetryUtils.retry(60, 5000, () -> {
-//                logger.info("⏳ Polling export status for Job ID {}...", exportJobId);
-//                ExportUri exportUri = outboundApi.getOutboundContactlistExport(contactListId, exportJobId);
-//                if (exportUri != null && exportUri.getUri() != null && !exportUri.getUri().isEmpty()) {
-//                    logger.info("✅ Export ready: {}", exportUri.getUri());
-//                    return exportUri.getUri();
-//                } else {
-//                    throw new RuntimeException("Export not ready yet.");
-//                }
-//            });
-//            if (downloadUri == null) {
-//                throw new RuntimeException("❌ Export did not complete in time");
-//            }
-//            return downloadUri;
-//        } catch (Exception e) {
-//            logger.error("🚫 Unexpected export error: {}", e.getMessage(), e);
-//            throw new RuntimeException("Contact export ultimately failed", e);
-//        }
-//    }
-//
-//    private String readExportData(String downloadUri, String token) {
-//        HttpHeaders headers = new HttpHeaders();
-//        headers.setBearerAuth(token);
-//        HttpEntity < Void > requestEntity = new HttpEntity < > (headers);
-//
-//        try {
-//            logger.info("Attempting to fetch content from the download link: {}", downloadUri);
-//
-//            // Fetch initial response from the provided download URI
-//            ResponseEntity < String > initialResponse = restTemplate.exchange(downloadUri, HttpMethod.GET, requestEntity, String.class);
-//            String content = initialResponse.getBody();
-//
-//            if (content != null && content.trim().startsWith("<!DOCTYPE html>")) {
-//                // Case: HTML content instead of CSV
-//                logger.error("[STEP 1 - ERROR] HTML content received from URI: {}", downloadUri);
-//                logger.info("[STEP 2] Attempting to extract the direct CSV link from HTML...");
-//                String directCsvLink = extractDirectCsvLink(content);
-//
-//                if (directCsvLink != null) {
-//                    logger.info("[STEP 3] Direct CSV link found: {}. Attempting to download from this link...", directCsvLink);
-//                    ResponseEntity < String > csvResponse = restTemplate.exchange(directCsvLink, HttpMethod.GET, requestEntity, String.class);
-//                    return csvResponse.getBody();
-//                } else {
-//                    logger.error("[STEP 2 - ERROR] Unable to extract CSV link from HTML content.");
-//                    return content;
-//                }
-//            } else {
-//                // Case: CSV content received directly
-//                return content;
-//            }
-//        } catch (HttpClientErrorException e) {
-//            // Handle HTTP client errors
-//            logger.error("[ERROR] HTTP error while fetching data from {}: {} - {}", downloadUri, e.getStatusCode(), e.getResponseBodyAsString());
-//            throw new RuntimeException("Failed to fetch data: " + e.getResponseBodyAsString(), e);
-//        } catch (Exception e) {
-//            // Handle unexpected errors
-//            logger.error("[ERROR] Unexpected error while fetching data from {}: {}", downloadUri, e.getMessage());
-//            throw new RuntimeException("Failed to fetch data.", e);
-//        }
-//    }
-//    //Method used in step 3 to extract uri
-//    private String extractDirectCsvLink(String htmlContent) {
-//        Pattern pattern = Pattern.compile("href=\"(https?://[^\"]+\\.csv)\"|url='(https?://[^']+\\.csv)'", Pattern.CASE_INSENSITIVE);
-//        Matcher matcher = pattern.matcher(htmlContent);
-//        if (matcher.find()) {
-//            if (matcher.group(1) != null) {
-//                return matcher.group(1);
-//            } else if (matcher.group(2) != null) {
-//                return matcher.group(2);
-//            }
-//        }
-//        Pattern metaRefreshPattern = Pattern.compile("<meta\\s+http-equiv=['\"]refresh['\"]\\s+content=['\"]\\d+;\\s*url=(https?://[^'\"]+\\.csv)['\"]", Pattern.CASE_INSENSITIVE);
-//        Matcher metaRefreshMatcher = metaRefreshPattern.matcher(htmlContent);
-//        if (metaRefreshMatcher.find()) {
-//            return metaRefreshMatcher.group(1);
-//        }
-//        logger.warn("No direct CSV link found in the HTML content. " +
-//                "Will attempt to download from the original URI, but it may still be HTML. " +
-//                "Content sample: {}", htmlContent.substring(0, Math.min(htmlContent.length(), 500)));
-//        return null;
-//    }
-
-//    public static String fetchOrderId(String contactOutbound, List<List<String>> rows) {
-//        for (List<String> row : rows) {
-//            if (!row.isEmpty() && row.get(0).equals(contactOutbound)) {
-//                String orderId = row.size() > 1 ? row.get(1) : null;
-//                if (orderId != null) {
-//                    logger.info("Found Order ID: " + orderId);
-//                }
-//                return orderId;
-//            }
-//        }
-//        logger.info("No Order ID found for contactOutbound: " + contactOutbound);
-//        return null;
-//    }
-
-
     public String fetchWrapUpName(String wrapUpId) {
         if (wrapUpId == null || wrapUpId.isEmpty()) {
             return null;
         }
 
+        Optional<Wrapup> wrapupOptional = wrapupRepository.findById(wrapUpId);
+
+        if (wrapupOptional.isPresent()) {
+            String name = wrapupOptional.get().getName();
+            logger.info("✅ Fetched WrapUp Name '{}' from DB for WrapUp ID: {}", name, wrapUpId);
+            return name;
+        } else {
+            logger.warn("❌ WrapUp ID '{}' not found in database.", wrapUpId);
+            return null;
+        }
+    }
+
+    public void saveAllWrapUpCodes() {
         String accessToken = getAccessToken();
         if (accessToken == null) {
-            logger.error("Failed to obtain Access Token for fetching wrap-up name.");
-            return null;
+            logger.error("Failed to obtain Access Token to save wrap-up codes.");
+            return;
         }
 
         String wrapUpUrl = "https://apps.mec1.pure.cloud/platform/api/v2/routing/wrapupcodes?pageSize=100";
-
         HttpHeaders headers = new HttpHeaders();
         headers.setBearerAuth(accessToken);
         headers.set("Accept", MediaType.APPLICATION_JSON_VALUE);
-
         HttpEntity<Void> requestEntity = new HttpEntity<>(headers);
 
         try {
@@ -928,30 +786,119 @@ attempt.setStatus(false);
             if (response.getStatusCode().is2xxSuccessful() && response.getBody() != null) {
                 JsonNode entities = response.getBody().path("entities");
                 if (entities.isArray()) {
-                    for (JsonNode wrapUp : entities) {
-                        String id = wrapUp.path("id").asText();
-                        if (wrapUpId.equals(id)) {
-                            String name = wrapUp.path("name").asText(null);
-                            logger.info("✅ Fetched WrapUp Name '{}' for WrapUp ID: {}", name, wrapUpId);
-                            return name;
+                    List<Wrapup> wrapupsToSave = new ArrayList<>();
+                    for (JsonNode wrapUpNode : entities) {
+                        String id = wrapUpNode.path("id").asText();
+
+                        // Check if the record already exists using the repository
+                        if (!wrapupRepository.existsById(id)) {
+                            String name = wrapUpNode.path("name").asText();
+                            wrapupsToSave.add(new Wrapup(id, name));
                         }
                     }
+
+                    if (!wrapupsToSave.isEmpty()) {
+                        wrapupRepository.saveAll(wrapupsToSave);
+                        logger.info("✅ Successfully saved {} new wrap-up codes to the database.", wrapupsToSave.size());
+                    } else {
+                        logger.info("ℹ️ No new wrap-up codes to save. All records already exist.");
+                    }
+                } else {
+                    logger.warn("❌ API response did not contain an 'entities' array.");
                 }
-                logger.warn("❌ WrapUp ID '{}' not found in response", wrapUpId);
-                return null;
             } else {
-                logger.warn("❌ Failed to fetch WrapUp Name for WrapUp ID: {}. Status: {}", wrapUpId, response.getStatusCode());
-                return null;
+                logger.warn("❌ Failed to fetch all wrap-up codes from API. Status: {}", response.getStatusCode());
             }
         } catch (Exception e) {
-            logger.error("🚫 Error fetching WrapUp Name for WrapUp ID: {}: {}", wrapUpId, e.getMessage(), e);
-            return null;
+            logger.error("🚫 Error saving wrap-up codes: {}", e.getMessage(), e);
         }
     }
 
 
+    public void saveNewUsersFromSearchApi() {
+        String accessToken = getAccessToken();
+        if (accessToken == null) {
+            logger.error("Failed to obtain Access Token for fetching users.");
+            return;
+        }
 
+        String apiUrl = "https://apps.mec1.pure.cloud/platform/api/v2/users/search";
+        HttpHeaders headers = new HttpHeaders();
+        headers.setBearerAuth(accessToken);
+        headers.setContentType(MediaType.APPLICATION_JSON);
+        headers.setAccept(List.of(MediaType.APPLICATION_JSON));
 
+        List<Users> newUsersToSave = new ArrayList<>();
+        ObjectMapper objectMapper = new ObjectMapper();
 
+        try {
+            int pageNumber = 1;
+            long totalPages;
+
+            do {
+                // Build the dynamic POST body with the correct page number
+                ObjectNode requestBody = objectMapper.createObjectNode();
+                requestBody.put("pageSize", 25);
+                requestBody.put("pageNumber", pageNumber);
+
+                ArrayNode queryNode = objectMapper.createArrayNode();
+                ObjectNode queryItem = objectMapper.createObjectNode();
+                queryItem.put("type", "EXACT");
+                queryItem.putArray("fields").add("state");
+                queryItem.putArray("values").add("active").add("inactive");
+                queryNode.add(queryItem);
+                requestBody.set("query", queryNode);
+
+                // Add other fields from your example
+                requestBody.put("sortOrder", "ASC");
+                requestBody.put("sortBy", "name");
+                requestBody.put("enforcePermissions", true);
+                requestBody.putArray("expand").add("images").add("authorization").add("team");
+
+                HttpEntity<String> requestEntity = new HttpEntity<>(requestBody.toString(), headers);
+
+                ResponseEntity<JsonNode> response = restTemplate.exchange(
+                        apiUrl,
+                        HttpMethod.POST,
+                        requestEntity,
+                        JsonNode.class
+                );
+
+                if (response.getStatusCode().is2xxSuccessful() && response.getBody() != null) {
+                    JsonNode userSearchResponse = response.getBody();
+                    JsonNode results = userSearchResponse.path("results");
+
+                    if (results.isArray()) {
+                        for (JsonNode userNode : results) {
+                            String userId = userNode.path("id").asText();
+
+                            // Check if user already exists
+                            if (!usersRepository.existsById(userId)) {
+                                String userName = userNode.path("name").asText();
+                                String userEmail = userNode.path("email").asText();
+                                newUsersToSave.add(new Users(userId, userName, userEmail));
+                            }
+                        }
+                    }
+
+                    totalPages = userSearchResponse.path("pageCount").asLong();
+                    pageNumber++;
+                } else {
+                    logger.warn("❌ Failed to fetch users. Status: {}", response.getStatusCode());
+                    break;
+                }
+            } while (pageNumber <= totalPages);
+
+            if (!newUsersToSave.isEmpty()) {
+                usersRepository.saveAll(newUsersToSave);
+                logger.info("✅ Successfully saved {} new users to the database.", newUsersToSave.size());
+            } else {
+                logger.info("ℹ️ No new users to save. All records already exist.");
+            }
+
+        } catch (Exception e) {
+            logger.error("🚫 Error fetching and saving users: {}", e.getMessage(), e);
+        }
+    }
 
 }

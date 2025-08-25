@@ -53,6 +53,7 @@ public class Attempt {
     private String conversationId;
    private boolean status;
     private String agentWrapUpName;
+    private  boolean Callable;
 
     // Getters and Setters
 }
