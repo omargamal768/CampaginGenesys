@@ -1,11 +1,13 @@
 package com.example.Campagin.service;
 
 
+import com.example.Campagin.exceptions.TokenRetrievalException;
 import com.example.Campagin.model.*;
 import com.example.Campagin.repo.AttemptRepository;
 import com.example.Campagin.repo.CallbackRepository;
 import com.example.Campagin.repo.UsersRepository;
 import com.example.Campagin.repo.WrapupRepository;
+import com.fasterxml.jackson.core.JsonProcessingException;
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.fasterxml.jackson.databind.node.ArrayNode;
@@ -17,17 +19,19 @@ import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.http.*;
 import org.springframework.stereotype.Service;
+import org.springframework.transaction.annotation.Transactional;
 import org.springframework.util.LinkedMultiValueMap;
 import org.springframework.util.MultiValueMap;
 import org.springframework.web.client.HttpClientErrorException;
 import org.springframework.web.client.RestTemplate;
-import org.springframework.web.client.ResourceAccessException;
 
 
-
+import java.nio.charset.StandardCharsets;
+import java.time.LocalDate;
 import java.time.LocalDateTime;
 import java.time.ZoneId;
 import java.time.ZonedDateTime;
+import java.time.format.DateTimeFormatter;
 import java.time.format.DateTimeParseException;
 import java.util.*;
 import java.util.stream.Collectors;
@@ -38,6 +42,9 @@ import java.util.stream.Collectors;
 public class GenesysService {
 
     private static final ZoneId DUBAI_TZ = ZoneId.of("Asia/Dubai");
+
+
+
     @Value("${genesys.client-id}")
     private String clientId;
 
@@ -49,6 +56,28 @@ public class GenesysService {
 
     @Value("${campaignId}")
     private String campaignId;
+
+    @Value("${auth.apitokengenesys}")
+    private String ApiTokenGenesys;
+    @Value("${conversation.interval}")
+    private String conversationInterval;
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
     private final RestTemplate restTemplate;
     private final AttemptRepository attemptRepository;
     private final CallbackRepository callbackRepository;
@@ -66,13 +95,14 @@ public class GenesysService {
     }
 
     public String getAccessToken() {
-        String authUrl = String.format("https://login.%s/oauth/token", region);
+        String authUrl = String.format(ApiTokenGenesys, region);
 
         HttpHeaders headers = new HttpHeaders();
         headers.setContentType(MediaType.APPLICATION_FORM_URLENCODED);
 
         String authString = clientId + ":" + clientSecret;
-        String base64AuthString = java.util.Base64.getEncoder().encodeToString(authString.getBytes());
+        String base64AuthString = Base64.getEncoder()
+                .encodeToString(authString.getBytes(StandardCharsets.UTF_8));
         headers.set("Authorization", "Basic " + base64AuthString);
 
         MultiValueMap<String, String> body = new LinkedMultiValueMap<>();
@@ -81,28 +111,74 @@ public class GenesysService {
         HttpEntity<MultiValueMap<String, String>> requestEntity = new HttpEntity<>(body, headers);
 
         try {
+            if (logger.isDebugEnabled()) {
+                logger.debug("🌍 [getAccessToken] Requesting token from URL: {}", authUrl);
+                logger.debug("🔑 [getAccessToken] Using clientId (masked): {}******",
+                        clientId != null && clientId.length() > 4 ? clientId.substring(0, 4) : "null");
+                logger.debug("📩 [getAccessToken] Request body: {}", body);
+            }
+
             String tokenResponse = restTemplate.postForObject(authUrl, requestEntity, String.class);
-            ObjectMapper mapper = new ObjectMapper();
-            JsonNode root = mapper.readTree(tokenResponse);
+
+            if (logger.isDebugEnabled()) {
+                logger.debug("📩 [getAccessToken] Raw token response: {}", tokenResponse);
+            }
+
+            JsonNode root = new ObjectMapper().readTree(tokenResponse);
             String token = root.path("access_token").asText();
 
             if (token == null || token.isEmpty()) {
-                throw new RuntimeException("Access token not found in response");
+                logger.error("❌ [getAccessToken] Access token not found in response");
+                if (logger.isDebugEnabled()) {
+                    logger.debug("🔍 [getAccessToken] Full response: {}", tokenResponse);
+                }
+                throw new TokenRetrievalException("Access token not found in response: " + tokenResponse);
             }
 
-            logger.info("✅ Token retrieved successfully");
+            logger.info("✅ [getAccessToken] Token retrieved successfully");
             return token;
 
         } catch (HttpClientErrorException e) {
-            logger.error("🔴 [getAccessToken] HTTP error: {} - {}", e.getStatusCode(), e.getResponseBodyAsString());
-            throw new RuntimeException("Failed to get access token: " + e.getResponseBodyAsString(), e);
+            // Always log error code + reason
+            logger.error("🔴 [getAccessToken] HTTP error: {} - {}", e.getStatusCode(), e.getStatusText());
+
+            // Always log response body (important to see {"error":"invalid_client"...})
+            String responseBody = e.getResponseBodyAsString();
+            if (responseBody != null && !responseBody.isBlank()) {
+                logger.error("🔍 [getAccessToken] Response body: {}", responseBody);
+            }
+
+            // Only show stack trace in debug mode
+            if (logger.isDebugEnabled()) {
+                logger.debug("🔍 [getAccessToken] Full exception stack trace", e);
+            }
+
+            throw new TokenRetrievalException("HTTP error while getting access token", e);
+
+        } catch (JsonProcessingException e) {
+            logger.error("🔴 [getAccessToken] Failed to parse token response: {}", e.getOriginalMessage());
+            if (logger.isDebugEnabled()) {
+                logger.debug("🔍 [getAccessToken] Parsing error details", e);
+            }
+            throw new TokenRetrievalException("Invalid token response format", e);
+
         } catch (Exception e) {
-            logger.error("🔴 [getAccessToken] Unexpected error: {}", e.getMessage(), e);
-            throw new RuntimeException("Unexpected error while getting access token", e);
+            logger.error("🔴 [getAccessToken] Unexpected error: {}", e.getMessage());
+            if (logger.isDebugEnabled()) {
+                logger.debug("🔍 [getAccessToken] Unexpected error stack trace", e);
+            }
+            throw new TokenRetrievalException("Unexpected error while getting access token", e);
         }
     }
 
     public void getConversationsAndStore() {
+        LocalDate today = LocalDate.now();
+        DateTimeFormatter formatter = DateTimeFormatter.ofPattern("yyyy-MM-dd");
+
+        String start = today.format(formatter) + "T00:00:00Z";
+        String end   = today.format(formatter) + "T23:59:59.000Z";
+        String interval = start + "/" + end;
+        logger.info(interval);
         String url = String.format("https://api.%s/api/v2/analytics/conversations/details/query", region);
         String token = getAccessToken();
         HttpHeaders headers = new HttpHeaders();
@@ -117,7 +193,7 @@ public class GenesysService {
         while (true) {
             String body = String.format("""
                     {
-                       "interval": "2025-08-25T00:00:00Z/2025-08-25T23:59:59.000Z",
+                       "interval": "%s",
                        "order": "asc",
                        "paging": {
                          "pageSize": %d,
@@ -125,7 +201,7 @@ public class GenesysService {
                        }
                      }
                 
-                """, pageSize, pageNumber);
+                """, interval,pageSize, pageNumber);
 
             HttpEntity<String> requestEntity = new HttpEntity<>(body, headers);
 
@@ -163,6 +239,17 @@ public class GenesysService {
             }
         }
     }
+
+
+
+
+
+
+
+
+
+
+
 
     private void processConversation(JsonNode conv) {
         boolean campaignMatch = false;
@@ -276,11 +363,6 @@ public class GenesysService {
             }
         }
     }
-
-
-
-
-
     private Attempt mapJsonToAttempt(JsonNode conv, JsonNode session, JsonNode participant) {
         if (!"customer".equalsIgnoreCase(participant.path("purpose").asText()) || !"voice".equalsIgnoreCase(session.path("mediaType").asText())) {
             return null;
@@ -387,7 +469,6 @@ logger.info(conversationEndNode.toString());
 
         return attempt;
     }
-
     private Callback mapJsonToCallback(JsonNode conv, JsonNode session) {
         if (!"agent".equalsIgnoreCase(session.path("flowInType").asText())) {
             return null;
@@ -900,5 +981,16 @@ logger.info(conversationEndNode.toString());
             logger.error("🚫 Error fetching and saving users: {}", e.getMessage(), e);
         }
     }
+    @Transactional
+    public void deleteOldAttempts() {
+        LocalDateTime sevenDaysAgo = LocalDateTime.now().minusDays(7);
+
+        long countBefore = attemptRepository.count();
+        int deletedCount = attemptRepository.deleteByCreatedAtBefore(sevenDaysAgo);
+        long countAfter = attemptRepository.count();
+
+        logger.info("🗑 Deleted old attempts. Deleted: {}, Before: {}, After: {}", deletedCount, countBefore, countAfter);
+    }
+
 
 }

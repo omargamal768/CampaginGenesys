@@ -2,6 +2,7 @@ package com.example.Campagin.model;
 
 import jakarta.persistence.Entity;
 import jakarta.persistence.Id;
+import jakarta.persistence.PrePersist;
 import lombok.AllArgsConstructor;
 import lombok.Data;
 import lombok.NoArgsConstructor;
@@ -54,6 +55,13 @@ public class Attempt {
    private boolean status;
     private String agentWrapUpName;
     private  boolean Callable;
+    private LocalDateTime createdAt;
+
+    // قبل حفظ أي row جديدة، يعين الوقت الحالي
+    @PrePersist
+    protected void onCreate() {
+        this.createdAt = LocalDateTime.now();
+    }
 
     // Getters and Setters
 }

@@ -13,6 +13,8 @@ import org.springframework.http.HttpEntity;
 import org.springframework.http.HttpHeaders;
 import org.springframework.http.MediaType;
 import org.springframework.http.ResponseEntity;
+import org.springframework.retry.annotation.Backoff;
+import org.springframework.retry.annotation.Retryable;
 import org.springframework.stereotype.Service;
 import org.springframework.util.LinkedMultiValueMap;
 import org.springframework.util.MultiValueMap;
@@ -45,35 +47,34 @@ public class TaggerService {
                 .format(DateTimeFormatter.ISO_INSTANT);
     }
 
+
     private String getAccessTokenFromKeycloak() {
         String url = "https://keycloak.dev.taager.com/realms/taager_admin/protocol/openid-connect/token";
 
-        HttpHeaders headers = new HttpHeaders();
-        headers.setContentType(MediaType.APPLICATION_FORM_URLENCODED);
+        return retry(3, 5000, () -> {
+            HttpHeaders headers = new HttpHeaders();
+            headers.setContentType(MediaType.APPLICATION_FORM_URLENCODED);
 
-        MultiValueMap<String, String> body = new LinkedMultiValueMap<>();
-        body.add("grant_type", "password");
-        body.add("client_id", "integration");
-        body.add("username", "1rni21onr22infi23n");
-        body.add("password", "DMiYa3U2M7J9Vnc12312");
+            MultiValueMap<String, String> body = new LinkedMultiValueMap<>();
+            body.add("grant_type", "password");
+            body.add("client_id", "integration");
+            body.add("username", "1rni21onr22infi23n");
+            body.add("password", "DMiYa3U2M7J9Vnc12312");
 
-        HttpEntity<MultiValueMap<String, String>> request = new HttpEntity<>(body, headers);
+            HttpEntity<MultiValueMap<String, String>> request = new HttpEntity<>(body, headers);
 
-        try {
-            return retry(3, 2000, () -> {
-                ResponseEntity<String> response = restTemplate.postForEntity(url, request, String.class);
-                if (response.getStatusCode().is2xxSuccessful()) {
-                    JsonNode json = objectMapper.readTree(response.getBody());
-                    return json.get("access_token").asText();
-                } else {
-                    throw new RuntimeException("Failed to retrieve token. Status: " + response.getStatusCode());
-                }
-            });
-        } catch (Exception e) {
-            logger.error("🚫 Failed to get access token after retries: {}", e.getMessage(), e);
-            return null;
-        }
+            ResponseEntity<String> response = restTemplate.postForEntity(url, request, String.class);
+            if (response.getStatusCode().is2xxSuccessful()) {
+                JsonNode json = objectMapper.readTree(response.getBody());
+                return json.get("access_token").asText();
+            } else {
+                throw new RuntimeException("Failed to retrieve token. Status: " + response.getStatusCode());
+            }
+        });
     }
+
+
+
 
     public void sendAttemptsToTaager() {
         String token = getAccessTokenFromKeycloak();
@@ -82,21 +83,20 @@ public class TaggerService {
             return;
         }
 
-        // 1. Fetch all callbacks and put them in a map by outboundContactId
+        // 1. Fetch all callbacks
         Map<String, Callback> callbackMap = new HashMap<>();
         for (Callback cb : callbackRepository.findByStatusFalse()) {
             callbackMap.put(cb.getOutboundContactId(), cb);
         }
 
-        // 2. Fetch all attempts with status = false
+        // 2. Fetch all attempts
         List<Attempt> attempts = attemptRepository.findByStatusFalse();
-
         if (attempts.isEmpty()) {
             logger.info("No attempts found in database to send.");
             return;
         }
 
-        // ✅ Group Call Back attempts by outboundContactId and keep the latest one
+        // ✅ Group latest callback attempts
         Map<String, Attempt> latestCallbackAttempts = attempts.stream()
                 .filter(a -> "Call Back".equals(a.getAgentWrapUpName()))
                 .collect(Collectors.toMap(
@@ -113,9 +113,10 @@ public class TaggerService {
             call.put("call_datetime", attempt.getStartGst() != null ? formatUtcDate(attempt.getStartGst()) : "N/A");
             call.put("order_id", attempt.getOrderId() != null ? attempt.getOrderId() : "UNKNOWN");
             call.put("agent_id", attempt.getAgentEmail() != null ? attempt.getAgentEmail() : "NO_AGENT");
-call.put("Callable",attempt.isCallable());
-call.put("PhoneNumber",attempt.getPhone());
-// Wrap-up logic
+            call.put("Callable", attempt.isCallable());
+            call.put("PhoneNumber", attempt.getPhone());
+
+            // Wrap-up logic
             String peerWrapUp = attempt.getPeerWrapUpCode() != null ? attempt.getPeerWrapUpCode() : "NONE";
             String agentWrapUp = attempt.getAgentWrapUp() != null ? attempt.getAgentWrapUp() : "NONE";
             String agentWrapUpName = attempt.getAgentWrapUpName() != null ? attempt.getAgentWrapUpName() : "NONE";
@@ -128,7 +129,7 @@ call.put("PhoneNumber",attempt.getPhone());
                 call.put("wrap_up_reason", agentWrapUpName);
             }
 
-            // ✅ Only include callback details if it's the latest "Call Back" attempt for this contact
+            // ✅ Handle callback
             if ("Call Back".equals(attempt.getAgentWrapUpName())) {
                 Attempt latestAttempt = latestCallbackAttempts.get(attempt.getOutboundContactId());
                 if (latestAttempt != null && latestAttempt.getCustomerSessionId().equals(attempt.getCustomerSessionId())) {
@@ -160,29 +161,40 @@ call.put("PhoneNumber",attempt.getPhone());
             logger.error("🚫 Failed to serialize payload to JSON", e);
         }
 
-        // Send to Taager API
+        // 4. Send with retry (no return value → Void)
         try {
-            HttpHeaders headers = new HttpHeaders();
-            headers.setContentType(MediaType.APPLICATION_JSON);
-            headers.setBearerAuth(token);
+            retry(3, 5000, () -> {
+                HttpHeaders headers = new HttpHeaders();
+                headers.setContentType(MediaType.APPLICATION_JSON);
+                headers.setBearerAuth(token);
 
-            HttpEntity<Map<String, Object>> request = new HttpEntity<>(payload, headers);
-            String TAGGER_API_URL = "https://admin-internal.dev.taager.com/dialer/webhooks/genesys/call-attempts";
-            ResponseEntity<String> response = restTemplate.postForEntity(TAGGER_API_URL, request, String.class);
+                HttpEntity<Map<String, Object>> request = new HttpEntity<>(payload, headers);
+                String TAGGER_API_URL = "https://admin-internal.dev.taager.com/dialer/webhooks/genesys/call-attempts";
+                ResponseEntity<String> response = restTemplate.postForEntity(TAGGER_API_URL, request, String.class);
 
-            if (response.getStatusCode().is2xxSuccessful()) {
-                logger.info("✅ Successfully sent {} attempts to Taager.", attempts.size());
-                attempts.forEach(a -> a.setStatus(true));
-                attemptRepository.saveAll(attempts);
-                logger.info("✅ Updated {} attempts status to true.", attempts.size());
-                callbackMap.values().forEach(cb -> cb.setStatus(true));
-                callbackRepository.saveAll(callbackMap.values());
-                logger.info("✅ Updated {} callbacks status to true.", callbackMap.size());
-            } else {
-                logger.error("🚫 Failed to send attempts. Status: {}, Body: {}", response.getStatusCode(), response.getBody());
-            }
+                if (response.getStatusCode().is2xxSuccessful()) {
+                    logger.info("✅ Successfully sent {} attempts to Taager.", attempts.size());
+                    attempts.forEach(a -> a.setStatus(true));
+                    attemptRepository.saveAll(attempts);
+                    callbackMap.values().forEach(cb -> cb.setStatus(true));
+                    callbackRepository.saveAll(callbackMap.values());
+                } else {
+                    throw new RuntimeException("🚫 Failed to send attempts. Status: " + response.getStatusCode() +
+                            ", Body: " + response.getBody());
+                }
+
+                return null; // ✅ important, because retry expects a return
+            });
         } catch (Exception e) {
-            logger.error("🚫 Error while sending attempts to Taager: {}", e.getMessage(), e);
+            logger.error("🚫 Error while sending attempts to Taager after retries: {}", e.getMessage(), e);
         }
     }
+
+
+
+
+
+
+
+
 }
