@@ -13,8 +13,6 @@ import org.springframework.http.HttpEntity;
 import org.springframework.http.HttpHeaders;
 import org.springframework.http.MediaType;
 import org.springframework.http.ResponseEntity;
-import org.springframework.retry.annotation.Backoff;
-import org.springframework.retry.annotation.Retryable;
 import org.springframework.stereotype.Service;
 import org.springframework.util.LinkedMultiValueMap;
 import org.springframework.util.MultiValueMap;
@@ -31,8 +29,8 @@ import static com.example.Campagin.config.RetryUtils.retry;
 
 @Service
 @RequiredArgsConstructor
-public class TaggerService {
-    private static final Logger logger = LoggerFactory.getLogger(TaggerService.class);
+public class TaagerService {
+    private static final Logger logger = LoggerFactory.getLogger(TaagerService.class);
 
     private final RestTemplate restTemplate;
     private final ObjectMapper objectMapper;

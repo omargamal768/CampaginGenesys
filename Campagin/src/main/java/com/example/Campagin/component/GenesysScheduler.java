@@ -1,7 +1,7 @@
 package com.example.Campagin.component;
 
 import com.example.Campagin.service.GenesysService;
-import com.example.Campagin.service.TaggerService;
+import com.example.Campagin.service.TaagerService;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.scheduling.annotation.Scheduled;
@@ -13,16 +13,16 @@ import java.util.concurrent.locks.ReentrantLock;
 public class GenesysScheduler {
 
     private final GenesysService genesysService;
-    private final TaggerService taggerService;
+    private final TaagerService taagerService;
     private static final Logger logger = LoggerFactory.getLogger(GenesysScheduler.class);
 
     private final ReentrantLock pipeline1Lock = new ReentrantLock();
     private final ReentrantLock pipeline2Lock = new ReentrantLock();
     private final ReentrantLock pipeline3Lock = new ReentrantLock();
 
-    public GenesysScheduler(GenesysService genesysService, TaggerService taggerService) {
+    public GenesysScheduler(GenesysService genesysService, TaagerService taagerService) {
         this.genesysService = genesysService;
-        this.taggerService = taggerService;
+        this.taagerService = taagerService;
     }
 
     /** Pipeline1: Wrap-up codes + New Users كل ساعة */
@@ -59,7 +59,7 @@ public class GenesysScheduler {
                 logger.warn("⚠️ Delay interrupted before sending to Taager");
             }
 
-            runStep("Sending attempts to Taager", taggerService::sendAttemptsToTaager);
+            runStep("Sending attempts to Taager", taagerService::sendAttemptsToTaager);
         } finally {
             pipeline2Lock.unlock();
         }
