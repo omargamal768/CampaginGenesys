@@ -7,6 +7,7 @@ import com.example.Campagin.repo.CallbackRepository;
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import lombok.RequiredArgsConstructor;
+import org.springframework.beans.factory.annotation.Value;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.http.HttpEntity;
@@ -37,6 +38,23 @@ public class TaagerService {
     private final AttemptRepository attemptRepository;
     private final CallbackRepository callbackRepository;
 
+    @Value("${keycloak.token.url}")
+    private String keycloakTokenUrl;
+
+    @Value("${keycloak.client.id}")
+    private String clientId;
+
+    @Value("${keycloak.username}")
+    private String username;
+
+    @Value("${keycloak.password}")
+    private String password;
+
+    @Value("${keycloak.grant.type}")
+    private String grantType;
+
+    @Value("${taager.api.url}")
+    private String taagerApiUrl;
 
 
     private String formatUtcDate(LocalDateTime localDateTime) {
@@ -47,17 +65,17 @@ public class TaagerService {
 
 
     private String getAccessTokenFromKeycloak() {
-        String url = "https://keycloak.dev.taager.com/realms/taager_admin/protocol/openid-connect/token";
+        String url = keycloakTokenUrl;
 
         return retry(3, 5000, () -> {
             HttpHeaders headers = new HttpHeaders();
             headers.setContentType(MediaType.APPLICATION_FORM_URLENCODED);
 
             MultiValueMap<String, String> body = new LinkedMultiValueMap<>();
-            body.add("grant_type", "password");
-            body.add("client_id", "integration");
-            body.add("username", "1rni21onr22infi23n");
-            body.add("password", "DMiYa3U2M7J9Vnc12312");
+            body.add("grant_type", grantType);
+            body.add("client_id", clientId);
+            body.add("username", username);
+            body.add("password", password);
 
             HttpEntity<MultiValueMap<String, String>> request = new HttpEntity<>(body, headers);
 
@@ -167,7 +185,7 @@ public class TaagerService {
                 headers.setBearerAuth(token);
 
                 HttpEntity<Map<String, Object>> request = new HttpEntity<>(payload, headers);
-                String TAGGER_API_URL = "https://admin-internal.dev.taager.com/dialer/webhooks/genesys/call-attempts";
+                String TAGGER_API_URL = taagerApiUrl;
                 ResponseEntity<String> response = restTemplate.postForEntity(TAGGER_API_URL, request, String.class);
 
                 if (response.getStatusCode().is2xxSuccessful()) {

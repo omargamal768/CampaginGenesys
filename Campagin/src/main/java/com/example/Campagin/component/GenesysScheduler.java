@@ -41,7 +41,7 @@ public class GenesysScheduler {
     }
 
     /** Pipeline2: Conversations + Taager كل 1 دقائق */
-    @Scheduled(fixedRate =  60 * 1000, initialDelay = 30* 1000)
+    @Scheduled(fixedRate =  5*60 * 1000, initialDelay = 30* 1000)
     public void secondPipeline() {
         if (!pipeline2Lock.tryLock()) {
             logger.info("⏳ Pipeline2 skipped: another process is running.");
@@ -49,24 +49,14 @@ public class GenesysScheduler {
         }
         try {
             runStep("Fetching and storing conversations", genesysService::getConversationsAndStore);
-
-            // ✅ Delay between fetch and send (مثلاً 5 ثواني)
-            try {
-                logger.info("⏳ Waiting 30 seconds before sending attempts to Taager...");
-                Thread.sleep(30000);
-            } catch (InterruptedException e) {
-                Thread.currentThread().interrupt();
-                logger.warn("⚠️ Delay interrupted before sending to Taager");
-            }
-
             runStep("Sending attempts to Taager", taagerService::sendAttemptsToTaager);
         } finally {
             pipeline2Lock.unlock();
         }
     }
 
-    /** Pipeline3: Delete old attempts كل 9 دقائق */
-    @Scheduled(cron = "0 2 12 * * ?")
+    /** Pipeline3: Delete old attempts  */
+    @Scheduled(cron = "0 16 13 * * ?")
     public void deleteOldAttemptsJob() {
         if (!pipeline3Lock.tryLock()) {
             logger.info("⏳ Pipeline3 skipped: another process is running.");

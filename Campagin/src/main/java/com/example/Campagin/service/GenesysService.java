@@ -1,6 +1,7 @@
 package com.example.Campagin.service;
 
 
+import com.example.Campagin.config.RetryUtils;
 import com.example.Campagin.exceptions.TokenRetrievalException;
 import com.example.Campagin.model.*;
 import com.example.Campagin.repo.AttemptRepository;
@@ -59,8 +60,8 @@ public class GenesysService {
 
     @Value("${auth.apitokengenesys}")
     private String ApiTokenGenesys;
-    @Value("${conversation.interval}")
-    private String conversationInterval;
+    @Value("${conversation.query}")
+    private String conversationQuery;
 
 
 
@@ -95,91 +96,86 @@ public class GenesysService {
     }
 
     public String getAccessToken() {
-        String authUrl = String.format(ApiTokenGenesys, region);
+        return RetryUtils.retry(3, 2000, () -> {
+            String authUrl = String.format(ApiTokenGenesys, region);
 
-        HttpHeaders headers = new HttpHeaders();
-        headers.setContentType(MediaType.APPLICATION_FORM_URLENCODED);
+            HttpHeaders headers = new HttpHeaders();
+            headers.setContentType(MediaType.APPLICATION_FORM_URLENCODED);
 
-        String authString = clientId + ":" + clientSecret;
-        String base64AuthString = Base64.getEncoder()
-                .encodeToString(authString.getBytes(StandardCharsets.UTF_8));
-        headers.set("Authorization", "Basic " + base64AuthString);
+            String authString = clientId + ":" + clientSecret;
+            String base64AuthString = Base64.getEncoder()
+                    .encodeToString(authString.getBytes(StandardCharsets.UTF_8));
+            headers.set("Authorization", "Basic " + base64AuthString);
 
-        MultiValueMap<String, String> body = new LinkedMultiValueMap<>();
-        body.add("grant_type", "client_credentials");
+            MultiValueMap<String, String> body = new LinkedMultiValueMap<>();
+            body.add("grant_type", "client_credentials");
 
-        HttpEntity<MultiValueMap<String, String>> requestEntity = new HttpEntity<>(body, headers);
+            HttpEntity<MultiValueMap<String, String>> requestEntity = new HttpEntity<>(body, headers);
 
-        try {
-            if (logger.isDebugEnabled()) {
-                logger.debug("🌍 [getAccessToken] Requesting token from URL: {}", authUrl);
-                logger.debug("🔑 [getAccessToken] Using clientId (masked): {}******",
-                        clientId != null && clientId.length() > 4 ? clientId.substring(0, 4) : "null");
-                logger.debug("📩 [getAccessToken] Request body: {}", body);
-            }
-
-            String tokenResponse = restTemplate.postForObject(authUrl, requestEntity, String.class);
-
-            if (logger.isDebugEnabled()) {
-                logger.debug("📩 [getAccessToken] Raw token response: {}", tokenResponse);
-            }
-
-            JsonNode root = new ObjectMapper().readTree(tokenResponse);
-            String token = root.path("access_token").asText();
-
-            if (token == null || token.isEmpty()) {
-                logger.error("❌ [getAccessToken] Access token not found in response");
+            try {
                 if (logger.isDebugEnabled()) {
-                    logger.debug("🔍 [getAccessToken] Full response: {}", tokenResponse);
+                    logger.debug("🌍 [getAccessToken] Requesting token from URL: {}", authUrl);
+                    logger.debug("🔑 [getAccessToken] Using clientId (masked): {}******",
+                            clientId != null && clientId.length() > 4 ? clientId.substring(0, 4) : "null");
+                    logger.debug("📩 [getAccessToken] Request body: {}", body);
                 }
-                throw new TokenRetrievalException("Access token not found in response: " + tokenResponse);
+
+                String tokenResponse = restTemplate.postForObject(authUrl, requestEntity, String.class);
+
+                if (logger.isDebugEnabled()) {
+                    logger.debug("📩 [getAccessToken] Raw token response: {}", tokenResponse);
+                }
+
+                JsonNode root = new ObjectMapper().readTree(tokenResponse);
+                String token = root.path("access_token").asText();
+
+                if (token == null || token.isEmpty()) {
+                    logger.error("❌ [getAccessToken] Access token not found in response");
+                    if (logger.isDebugEnabled()) {
+                        logger.debug("🔍 [getAccessToken] Full response: {}", tokenResponse);
+                    }
+                    throw new TokenRetrievalException("Access token not found in response: " + tokenResponse);
+                }
+
+                logger.info("✅ [getAccessToken] Token retrieved successfully");
+                return token;
+
+            } catch (HttpClientErrorException e) {
+                logger.error("🔴 [getAccessToken] HTTP error: {} - {}", e.getStatusCode(), e.getStatusText());
+                String responseBody = e.getResponseBodyAsString();
+                if (responseBody != null && !responseBody.isBlank()) {
+                    logger.error("🔍 [getAccessToken] Response body: {}", responseBody);
+                }
+                if (logger.isDebugEnabled()) {
+                    logger.debug("🔍 [getAccessToken] Full exception stack trace", e);
+                }
+                throw new TokenRetrievalException("HTTP error while getting access token", e);
+
+            } catch (JsonProcessingException e) {
+                logger.error("🔴 [getAccessToken] Failed to parse token response: {}", e.getOriginalMessage());
+                if (logger.isDebugEnabled()) {
+                    logger.debug("🔍 [getAccessToken] Parsing error details", e);
+                }
+                throw new TokenRetrievalException("Invalid token response format", e);
+
+            } catch (Exception e) {
+                logger.error("🔴 [getAccessToken] Unexpected error: {}", e.getMessage());
+                if (logger.isDebugEnabled()) {
+                    logger.debug("🔍 [getAccessToken] Unexpected error stack trace", e);
+                }
+                throw new TokenRetrievalException("Unexpected error while getting access token", e);
             }
-
-            logger.info("✅ [getAccessToken] Token retrieved successfully");
-            return token;
-
-        } catch (HttpClientErrorException e) {
-            // Always log error code + reason
-            logger.error("🔴 [getAccessToken] HTTP error: {} - {}", e.getStatusCode(), e.getStatusText());
-
-            // Always log response body (important to see {"error":"invalid_client"...})
-            String responseBody = e.getResponseBodyAsString();
-            if (responseBody != null && !responseBody.isBlank()) {
-                logger.error("🔍 [getAccessToken] Response body: {}", responseBody);
-            }
-
-            // Only show stack trace in debug mode
-            if (logger.isDebugEnabled()) {
-                logger.debug("🔍 [getAccessToken] Full exception stack trace", e);
-            }
-
-            throw new TokenRetrievalException("HTTP error while getting access token", e);
-
-        } catch (JsonProcessingException e) {
-            logger.error("🔴 [getAccessToken] Failed to parse token response: {}", e.getOriginalMessage());
-            if (logger.isDebugEnabled()) {
-                logger.debug("🔍 [getAccessToken] Parsing error details", e);
-            }
-            throw new TokenRetrievalException("Invalid token response format", e);
-
-        } catch (Exception e) {
-            logger.error("🔴 [getAccessToken] Unexpected error: {}", e.getMessage());
-            if (logger.isDebugEnabled()) {
-                logger.debug("🔍 [getAccessToken] Unexpected error stack trace", e);
-            }
-            throw new TokenRetrievalException("Unexpected error while getting access token", e);
-        }
+        });
     }
 
     public void getConversationsAndStore() {
         LocalDate today = LocalDate.now();
         DateTimeFormatter formatter = DateTimeFormatter.ofPattern("yyyy-MM-dd");
-
         String start = today.format(formatter) + "T00:00:00Z";
         String end   = today.format(formatter) + "T23:59:59.000Z";
         String interval = start + "/" + end;
         logger.info(interval);
-        String url = String.format("https://api.%s/api/v2/analytics/conversations/details/query", region);
+        String url = String.format(conversationQuery, region);
         String token = getAccessToken();
         HttpHeaders headers = new HttpHeaders();
         headers.setContentType(MediaType.APPLICATION_JSON);
@@ -239,17 +235,6 @@ public class GenesysService {
             }
         }
     }
-
-
-
-
-
-
-
-
-
-
-
 
     private void processConversation(JsonNode conv) {
         boolean campaignMatch = false;
@@ -363,6 +348,7 @@ public class GenesysService {
             }
         }
     }
+
     private Attempt mapJsonToAttempt(JsonNode conv, JsonNode session, JsonNode participant) {
         if (!"customer".equalsIgnoreCase(participant.path("purpose").asText()) || !"voice".equalsIgnoreCase(session.path("mediaType").asText())) {
             return null;
@@ -846,60 +832,87 @@ logger.info(conversationEndNode.toString());
     public void saveAllWrapUpCodes() {
         String accessToken = getAccessToken();
         if (accessToken == null) {
-            logger.error("Failed to obtain Access Token to save wrap-up codes.");
+            logger.error("❌ Failed to obtain Access Token to save wrap-up codes.");
             return;
         }
 
-        String wrapUpUrl = "https://apps.mec1.pure.cloud/platform/api/v2/routing/wrapupcodes?pageSize=100";
+        String wrapUpUrlTemplate = "https://apps.mec1.pure.cloud/platform/api/v2/routing/wrapupcodes?pageSize=100&pageNumber=%d";
         HttpHeaders headers = new HttpHeaders();
         headers.setBearerAuth(accessToken);
-        headers.set("Accept", MediaType.APPLICATION_JSON_VALUE);
+        headers.setAccept(List.of(MediaType.APPLICATION_JSON));
         HttpEntity<Void> requestEntity = new HttpEntity<>(headers);
 
-        try {
-            ResponseEntity<JsonNode> response = restTemplate.exchange(
-                    wrapUpUrl,
-                    HttpMethod.GET,
-                    requestEntity,
-                    JsonNode.class
-            );
+        int pageNumber = 1;
+        long totalPages;
+        List<Wrapup> wrapupsToInsert = new ArrayList<>();
+        List<Wrapup> wrapupsToUpdate = new ArrayList<>();
 
-            if (response.getStatusCode().is2xxSuccessful() && response.getBody() != null) {
-                JsonNode entities = response.getBody().path("entities");
-                if (entities.isArray()) {
-                    List<Wrapup> wrapupsToSave = new ArrayList<>();
-                    for (JsonNode wrapUpNode : entities) {
-                        String id = wrapUpNode.path("id").asText();
-
-                        // Check if the record already exists using the repository
-                        if (!wrapupRepository.existsById(id)) {
-                            String name = wrapUpNode.path("name").asText();
-                            wrapupsToSave.add(new Wrapup(id, name));
+        do {
+            int finalPage = pageNumber;
+            JsonNode body = RetryUtils.retry(
+                    3, // عدد المحاولات
+                    2000, // 2 ثانية بين المحاولات
+                    () -> {
+                        ResponseEntity<JsonNode> response = restTemplate.exchange(
+                                String.format(wrapUpUrlTemplate, finalPage),
+                                HttpMethod.GET,
+                                requestEntity,
+                                JsonNode.class
+                        );
+                        if (response.getStatusCode().is2xxSuccessful() && response.getBody() != null) {
+                            return response.getBody();
+                        } else {
+                            throw new RuntimeException("❌ Failed to fetch wrap-up codes. Status: " + response.getStatusCode());
                         }
                     }
+            );
 
-                    if (!wrapupsToSave.isEmpty()) {
-                        wrapupRepository.saveAll(wrapupsToSave);
-                        logger.info("✅ Successfully saved {} new wrap-up codes to the database.", wrapupsToSave.size());
+            JsonNode entities = body.path("entities");
+            if (entities.isArray()) {
+                for (JsonNode wrapUpNode : entities) {
+                    String id = wrapUpNode.path("id").asText();
+                    String name = wrapUpNode.path("name").asText();
+
+                    Wrapup existingWrapup = wrapupRepository.findById(id).orElse(null);
+                    if (existingWrapup == null) {
+                        // 🆕 جديد → insert
+                        wrapupsToInsert.add(new Wrapup(id, name));
                     } else {
-                        logger.info("ℹ️ No new wrap-up codes to save. All records already exist.");
+                        // 🔄 موجود → check اختلاف
+                        if (!existingWrapup.getName().equals(name)) {
+                            existingWrapup.setName(name);
+                            wrapupsToUpdate.add(existingWrapup);
+                        }
                     }
-                } else {
-                    logger.warn("❌ API response did not contain an 'entities' array.");
                 }
-            } else {
-                logger.warn("❌ Failed to fetch all wrap-up codes from API. Status: {}", response.getStatusCode());
             }
-        } catch (Exception e) {
-            logger.error("🚫 Error saving wrap-up codes: {}", e.getMessage(), e);
+
+            totalPages = body.path("pageCount").asLong();
+            pageNumber++;
+
+        } while (pageNumber <= totalPages);
+
+        // ✅ Insert
+        if (!wrapupsToInsert.isEmpty()) {
+            wrapupRepository.saveAll(wrapupsToInsert);
+            logger.info("✅ Inserted {} new wrap-up codes.", wrapupsToInsert.size());
+        }
+
+        // 🔄 Update
+        if (!wrapupsToUpdate.isEmpty()) {
+            wrapupRepository.saveAll(wrapupsToUpdate);
+            logger.info("🔄 Updated {} existing wrap-up codes.", wrapupsToUpdate.size());
+        }
+
+        if (wrapupsToInsert.isEmpty() && wrapupsToUpdate.isEmpty()) {
+            logger.info("ℹ️ No wrap-up codes to insert or update. All records already up to date.");
         }
     }
-
 
     public void saveNewUsersFromSearchApi() {
         String accessToken = getAccessToken();
         if (accessToken == null) {
-            logger.error("Failed to obtain Access Token for fetching users.");
+            logger.error("❌ Failed to obtain Access Token for fetching users.");
             return;
         }
 
@@ -907,79 +920,61 @@ logger.info(conversationEndNode.toString());
         HttpHeaders headers = new HttpHeaders();
         headers.setBearerAuth(accessToken);
         headers.setContentType(MediaType.APPLICATION_JSON);
-        headers.setAccept(List.of(MediaType.APPLICATION_JSON));
 
-        List<Users> newUsersToSave = new ArrayList<>();
-        ObjectMapper objectMapper = new ObjectMapper();
+        int maxRetries = 3;
+        int attempt = 0;
+        boolean success = false;
+        String responseBody = null;
 
-        try {
-            int pageNumber = 1;
-            long totalPages;
-
-            do {
-                // Build the dynamic POST body with the correct page number
-                ObjectNode requestBody = objectMapper.createObjectNode();
-                requestBody.put("pageSize", 25);
-                requestBody.put("pageNumber", pageNumber);
-
-                ArrayNode queryNode = objectMapper.createArrayNode();
-                ObjectNode queryItem = objectMapper.createObjectNode();
-                queryItem.put("type", "EXACT");
-                queryItem.putArray("fields").add("state");
-                queryItem.putArray("values").add("active").add("inactive");
-                queryNode.add(queryItem);
-                requestBody.set("query", queryNode);
-
-                // Add other fields from your example
-                requestBody.put("sortOrder", "ASC");
-                requestBody.put("sortBy", "name");
-                requestBody.put("enforcePermissions", true);
-                requestBody.putArray("expand").add("images").add("authorization").add("team");
-
-                HttpEntity<String> requestEntity = new HttpEntity<>(requestBody.toString(), headers);
-
-                ResponseEntity<JsonNode> response = restTemplate.exchange(
-                        apiUrl,
-                        HttpMethod.POST,
-                        requestEntity,
-                        JsonNode.class
-                );
-
-                if (response.getStatusCode().is2xxSuccessful() && response.getBody() != null) {
-                    JsonNode userSearchResponse = response.getBody();
-                    JsonNode results = userSearchResponse.path("results");
-
-                    if (results.isArray()) {
-                        for (JsonNode userNode : results) {
-                            String userId = userNode.path("id").asText();
-
-                            // Check if user already exists
-                            if (!usersRepository.existsById(userId)) {
-                                String userName = userNode.path("name").asText();
-                                String userEmail = userNode.path("email").asText();
-                                newUsersToSave.add(new Users(userId, userName, userEmail));
-                            }
-                        }
-                    }
-
-                    totalPages = userSearchResponse.path("pageCount").asLong();
-                    pageNumber++;
-                } else {
-                    logger.warn("❌ Failed to fetch users. Status: {}", response.getStatusCode());
-                    break;
+        while (attempt < maxRetries && !success) {
+            attempt++;
+            try {
+                ResponseEntity<String> response = restTemplate.postForEntity(apiUrl, new HttpEntity<>("{}", headers), String.class);
+                responseBody = response.getBody();
+                success = true; // ✅ لو نجحت الـ API call
+            } catch (Exception e) {
+                logger.warn("⚠️ Attempt {}/{} failed to call API: {}", attempt, maxRetries, e.getMessage());
+                if (attempt == maxRetries) {
+                    logger.error("❌ Failed to fetch users after {} attempts.", maxRetries);
+                    return;
                 }
-            } while (pageNumber <= totalPages);
-
-            if (!newUsersToSave.isEmpty()) {
-                usersRepository.saveAll(newUsersToSave);
-                logger.info("✅ Successfully saved {} new users to the database.", newUsersToSave.size());
-            } else {
-                logger.info("ℹ️ No new users to save. All records already exist.");
             }
-
-        } catch (Exception e) {
-            logger.error("🚫 Error fetching and saving users: {}", e.getMessage(), e);
         }
+
+        if (responseBody == null) return;
+
+        // ✅ هنا ييجي منطق الداتا بيز (insert / update)
+        List<Users> usersFromApi = parseUsers(responseBody);
+        for (Users user : usersFromApi) {
+            Users existingUser = usersRepository.findById(user.getUserId()).orElse(null);
+            if (existingUser == null) {
+                usersRepository.save(user); // جديد
+            } else if (!existingUser.equals(user)) {
+                usersRepository.save(user); // update لو مختلف
+            }
+        }
+    }
+
+    private List<Users> parseUsers(String responseBody) {
+        List<Users> users = new ArrayList<>();
+        try {
+            ObjectMapper mapper = new ObjectMapper();
+            JsonNode root = mapper.readTree(responseBody);
+            JsonNode results = root.path("results");
+
+            if (results.isArray()) {
+                for (JsonNode node : results) {
+                    String id = node.path("id").asText();
+                    String name = node.path("name").asText();
+                    String email = node.path("email").asText();
+
+                    users.add(new Users(id, name, email));
+                }
+            }
+        } catch (Exception e) {
+            logger.error("🚫 Error parsing users JSON: {}", e.getMessage(), e);
+        }
+        return users;
     }
     @Transactional
     public void deleteOldAttempts() {
